@@ -23,7 +23,7 @@ def handle_add_restaurant():
 
         if text.startswith("help"):
             response = get_response_for_add_restaurant_help()
-        elif len(parameters) < 5:
+        elif len(parameters) < 6:
             response = get_response_for_add_restaurant_few_arguments()
         else:
             response = get_response_for_add_restaurant_confirm(parameters)
@@ -64,7 +64,8 @@ def get_response_for_add_restaurant_confirm(parameters):
         "address": parameters[1],
         "initial duration": parameters[2],
         "initial rating": parameters[3],
-        "tags": ', '.join(parameters[4:])
+        "initial price": parameters[4],
+        "tags": ', '.join(parameters[5:])
     }
 
     confirmation_answer_pretty = json.dumps(
@@ -106,8 +107,8 @@ def get_response_for_add_restaurant_help():
     response = {
         "response_type": "ephermal",
         "text": """
-Usage: `/lunchbot-add-restaurant <"name"> <"address"> <initial duration in minutes> <initial rating 1-5> <"tags" separated by spaces>`
-(e.g. `/lunchbot-add-restaurant "Suppé" "1065 Budapest, Hajós u. 19." 30 4 hash-house small-place`)
+Usage: `/lunchbot-add-restaurant <"name"> <"address"> <initial duration in minutes> <initial rating 1-5> <initial price> <"tags" separated by spaces>`
+(e.g. `/lunchbot-add-restaurant "Suppé" "1065 Budapest, Hajós u. 19." 30 4 1100 hash-house small-place`)
 """
     }
 
