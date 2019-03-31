@@ -24,6 +24,3 @@ def lunchbot():
         response_type='in_channel',
         text='hello there',
     )
-
-if __name__ == "__main__":
-    main()
