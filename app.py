@@ -36,11 +36,11 @@ def verify_slack_request(slack_signature=None, slack_request_timestamp=None, req
 @app.route('/', methods=['POST'])
 def lunchbot():
     # capture the necessary data
-    slack_signature = event['headers']['X-Slack-Signature']
-    slack_request_timestamp = event['headers']['X-Slack-Request-Timestamp']
+    slack_signature = request.headers['X-Slack-Signature']
+    slack_request_timestamp = request.headers['X-Slack-Request-Timestamp']
 
     # verify the request
-    if not verify_slack_request(slack_signature, slack_request_timestamp, event['body']):
+    if not verify_slack_request(slack_signature, slack_request_timestamp, request.data):
         logger.info('Bad request.')
         response = {
             "statusCode": 400,
