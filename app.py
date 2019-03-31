@@ -35,20 +35,28 @@ def verify_slack_request(slack_signature=None, slack_request_timestamp=None, req
 
 @app.route('/', methods=['POST'])
 def lunchbot():
-    # capture the necessary data
-    slack_signature = request.headers['X-Slack-Signature']
-    slack_request_timestamp = request.headers['X-Slack-Request-Timestamp']
+    try:
+        # capture the necessary data
+        slack_signature = request.headers['X-Slack-Signature']
+        slack_request_timestamp = request.headers['X-Slack-Request-Timestamp']
 
-    # verify the request
-    if not verify_slack_request(slack_signature, slack_request_timestamp, request.data):
-        logger.info('Bad request.')
+        # verify the request
+        if not verify_slack_request(slack_signature, slack_request_timestamp, request.data):
+            logger.info('Bad request.')
+            response = {
+                "statusCode": 400,
+                "body": ''
+            }
+            return response
+
+        return jsonify(
+            response_type='in_channel',
+            text='hello there',
+        )
+    except Exception as e:
+        logger.error(f"ERROR: {e}")
         response = {
-            "statusCode": 400,
+            "statusCode": 200,
             "body": ''
         }
         return response
-
-    return jsonify(
-        response_type='in_channel',
-        text='hello there',
-    )
