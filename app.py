@@ -10,18 +10,21 @@ app = Flask(__name__)
 slack_events_adapter = SlackEventAdapter(os.environ["SLACK_SIGNING_SECRET"], "/slack/events", app)
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("lunchbot")
+db = {
+    "restaurants": []
+}
 
 
-@app.route("/", methods=["POST"])
+@app.route("/command/lunchbot-add-restaurant", methods=["POST"])
 def handle_add_restaurant():
     try:
         text = request.values["text"]
         parameters = shlex.split(text)
 
         if text.startswith("help"):
-            response = handle_add_restaurant_help()
+            response = get_response_for_add_restaurant_help()
         elif len(parameters) < 5:
-            response = handle_add_restaurant_few_arguments()
+            response = get_response_for_add_restaurant_few_arguments()
         else:
             response = get_response_for_add_restaurant_confirm(parameters)
 
@@ -31,17 +34,44 @@ def handle_add_restaurant():
         abort(200)
 
 
+@app.route("/actions", methods=["POST"])
+def handle_actions():
+    payload = json.loads(request.values["payload"])
+
+    if payload["actions"][0]["name"] == "confirm-add-restaurant":
+        restaurant_to_add = db.pop("temp_restaurant", None)
+        if payload["actions"][0]["value"] == "true":
+            db["restaurants"].append(restaurant_to_add)
+            logger.debug(f"Restaurant added to db: {restaurant_to_add}")
+            response = {
+                "response_type": "ephermal",
+                "replace_original": "true",
+                "text": f"Successfully added restaurant {restaurant_to_add['name']}."
+            }
+        else:
+            response = {
+                "response_type": "ephermal",
+                "replace_original": "true",
+                "text": f"Cancelled to add new restaurant."
+            }
+
+    return jsonify(response)
+
+
 def get_response_for_add_restaurant_confirm(parameters):
     confirmation_answer = {
-        "Name": parameters[0],
-        "Address": parameters[1],
-        "Initial duration": parameters[2],
-        "Initial rating": parameters[3],
-        "Tags": ', '.join(parameters[4:])
+        "name": parameters[0],
+        "address": parameters[1],
+        "initial duration": parameters[2],
+        "initial rating": parameters[3],
+        "tags": ', '.join(parameters[4:])
     }
+
     confirmation_answer_pretty = json.dumps(
         confirmation_answer, ensure_ascii=False, indent=0
     )[1:-1].replace('"', '')
+
+    db['temp_restaurant'] = confirmation_answer
 
     response = {
         "response_type": "ephermal",
@@ -49,16 +79,17 @@ def get_response_for_add_restaurant_confirm(parameters):
         "attachments": [
             {
                 "text": confirmation_answer_pretty,
+                "callback_id": "add-restaurant",
                 "actions": [
                     {
-                        "name": "add",
+                        "name": "confirm-add-restaurant",
                         "type": "button",
                         "text": "Add restaurant",
                         "value": "true",
                         "style": "primary"
                     },
                     {
-                        "name": "cancel",
+                        "name": "confirm-add-restaurant",
                         "type": "button",
                         "text": "Cancel",
                         "value": "false",
@@ -71,7 +102,7 @@ def get_response_for_add_restaurant_confirm(parameters):
     return response
 
 
-def handle_add_restaurant_help():
+def get_response_for_add_restaurant_help():
     response = {
         "response_type": "ephermal",
         "text": """
@@ -83,7 +114,7 @@ Usage: `/lunchbot-add-restaurant <"name"> <"address"> <initial duration in minut
     return response
 
 
-def handle_add_restaurant_few_arguments():
+def get_response_for_add_restaurant_few_arguments():
     response = {
         "response_type": "ephermal",
         "text": "Too few arguments, see `/lunchbot-add-restaurant help` for usage."
