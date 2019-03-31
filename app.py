@@ -59,14 +59,22 @@ def handle_actions():
 
 
 def get_response_for_add_restaurant_confirm(parameters):
-    confirmation_answer = {
-        "name": parameters[0],
-        "address": parameters[1],
-        "initial duration": parameters[2],
-        "initial rating": parameters[3],
-        "initial price": parameters[4],
-        "tags": ', '.join(parameters[5:])
-    }
+    try:
+        confirmation_answer = {
+            "name": parameters[0],
+            "address": parameters[1],
+            "initial duration": int(parameters[2]),
+            "initial rating": int(parameters[3]),
+            "initial price": int(parameters[4]),
+            "tags": ', '.join(parameters[5:])
+        }
+    except ValueError:
+        response = {
+            "response_type": "ephermal",
+            "text": "Duration, rating and price should be numbers, see `/lunchbot-add-restaurant help` for usage."
+        }
+
+        return response
 
     confirmation_answer_pretty = json.dumps(
         confirmation_answer, ensure_ascii=False, indent=0
