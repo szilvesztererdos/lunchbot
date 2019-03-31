@@ -2,6 +2,8 @@ import os
 import logging
 import shlex
 import json
+import pymongo
+from urllib.parse import urlparse
 from slackeventsapi import SlackEventAdapter
 from flask import abort, Flask, jsonify, request
 
@@ -10,9 +12,14 @@ app = Flask(__name__)
 slack_events_adapter = SlackEventAdapter(os.environ["SLACK_SIGNING_SECRET"], "/slack/events", app)
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("lunchbot")
-db = {
-    "restaurants": []
-}
+mongodb_uri = os.environ.get("MONGODB_URI")
+try:
+    conn = pymongo.MongoClient(mongodb_uri)
+    logger.info("MongoDB connection successful.")
+except pymongo.errors.ConnectionFailure as e:
+    logger.info(f"Could not connect to MongoDB: {e}")
+
+db = conn[urlparse(mongodb_uri).path[1:]]
 
 
 @app.route("/command/lunchbot-add-restaurant", methods=["POST"])
@@ -39,9 +46,11 @@ def handle_actions():
     payload = json.loads(request.values["payload"])
 
     if payload["actions"][0]["name"] == "confirm-add-restaurant":
-        restaurant_to_add = db.pop("temp_restaurant", None)
+        restaurant_to_add = db["temp"].find_one_and_delete({"name": "temp_restaurant"})
         if payload["actions"][0]["value"] == "true":
-            db["restaurants"].append(restaurant_to_add)
+            db["restaurants"].insert_one(
+                restaurant_to_add
+            )
             logger.debug(f"Restaurant added to db: {restaurant_to_add}")
             response = {
                 "response_type": "ephermal",
@@ -80,7 +89,10 @@ def get_response_for_add_restaurant_confirm(parameters):
         confirmation_answer, ensure_ascii=False, indent=0
     )[1:-1].replace('"', '')
 
-    db['temp_restaurant'] = confirmation_answer
+    db['temp'].insert_one({
+        "name": "temp_restaurant",
+        "value": confirmation_answer
+    })
 
     response = {
         "response_type": "ephermal",
