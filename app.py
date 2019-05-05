@@ -55,7 +55,7 @@ def handle_actions():
             response = {
                 "response_type": "ephermal",
                 "replace_original": "true",
-                "text": f"Successfully added restaurant {restaurant_to_add['name']}."
+                "text": f"Successfully added restaurant `{restaurant_to_add['value']['name']}`."
             }
         else:
             response = {
