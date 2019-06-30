@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from slackeventsapi import SlackEventAdapter
 from flask import abort, Flask, jsonify, request
 import requests
+import bson
 
 # globals
 app = Flask(__name__)
@@ -45,7 +46,7 @@ def handle_add_restaurant():
 @app.route("/command/lunchbot-list-restaurants", methods=["POST"])
 def handle_list_restaurants():
     try:
-        restaurant_entries = list(db['restaurants'].find({}, {"_id": 0, "value": 1}))
+        restaurant_entries = list(db['restaurants'].find())
         restaurants_markdown = [
             {
                 "type": "section",
@@ -61,13 +62,42 @@ def handle_list_restaurants():
         for i, restaurant_entry in enumerate(restaurant_entries):
             restaurant = restaurant_entry["value"]
             restaurant_name_markdown = f"*{i+1}. {restaurant['name']}*\n"
-            restaurant_others_markdown = '\n'.join(f"{key}: {value}" for key, value in list(restaurant.items())[1:])
+            restaurant_others_markdown = '\n'.join(f"{key}: {value}" for key, value in list(restaurant.items())[2:])
             restaurants_markdown.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
                     "text": restaurant_name_markdown + restaurant_others_markdown
                 }
+            })
+            restaurants_markdown.append({
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Remove restaurant"
+                        },
+                        "action_id": "remove-restaurant",
+                        "value": str(restaurant_entry["_id"]),
+                        "style": "danger",
+                        "confirm": {
+                            "title": {
+                                "type": "plain_text",
+                                "text": "Are you sure?"
+                            },
+                            "confirm": {
+                                "type": "plain_text",
+                                "text": "Yes"
+                            },
+                            "deny": {
+                                "type": "plain_text",
+                                "text": "No"
+                            }
+                        }
+                    }
+                ]
             })
         response = {
             "response_type": "ephermal",
@@ -102,6 +132,17 @@ def handle_actions():
                 "replace_original": "true",
                 "text": f"Cancelled to add new restaurant."
             }
+    # TODO: make it nicer: after removal the list should be displayed again
+    elif payload["actions"][0]["action_id"] == "remove-restaurant":
+        restaurant_id_to_remove = payload["actions"][0]["value"]
+        restaurant_to_remove = db["restaurants"].find_one({"_id": bson.ObjectId(restaurant_id_to_remove)})
+        db["restaurants"].delete_one({"_id": bson.ObjectId(restaurant_id_to_remove)})
+        logger.debug(f"Restaurant removed from db: {restaurant_to_remove}")
+        response = {
+            "response_type": "ephermal",
+            "replace_original": "true",
+            "text": f"Successfully removed restaurant `{restaurant_to_remove['value']['name']}`."
+        }
 
     requests.post(payload["response_url"], json=response)
     return 'OK'
