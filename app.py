@@ -6,6 +6,7 @@ import pymongo
 from urllib.parse import urlparse
 from slackeventsapi import SlackEventAdapter
 from flask import abort, Flask, jsonify, request
+import requests
 
 # globals
 app = Flask(__name__)
@@ -83,9 +84,9 @@ def handle_list_restaurants():
 def handle_actions():
     payload = json.loads(request.values["payload"])
 
-    if payload["actions"][0]["name"] == "confirm-add-restaurant":
+    if payload["actions"][0]["action_id"].startswith("confirm-add-restaurant"):
         restaurant_to_add = db["temp"].find_one_and_delete({"name": "temp_restaurant"})
-        if payload["actions"][0]["value"] == "true":
+        if payload["actions"][0]["action_id"] == "confirm-add-restaurant-true":
             db["restaurants"].insert_one(
                 restaurant_to_add
             )
@@ -102,7 +103,8 @@ def handle_actions():
                 "text": f"Cancelled to add new restaurant."
             }
 
-    return jsonify(response)
+    requests.post(payload["response_url"], json=response)
+    return 'OK'
 
 
 def get_response_for_add_restaurant_confirm(parameters):
@@ -132,27 +134,38 @@ def get_response_for_add_restaurant_confirm(parameters):
         "value": confirmation_answer
     })
 
+    # TODO: solve multi-user submissions as well (sending some id to temp?)
     response = {
         "response_type": "ephermal",
-        "text": "Do you want to add a restaurant with the following parameters?",
-        "attachments": [
+        "blocks": [
             {
-                "text": confirmation_answer_pretty,
-                "callback_id": "add-restaurant",
-                "actions": [
+                "type": "section",
+                "text": {
+                    "type": "plain_text",
+                    "text":
+                        f"Do you want to add a restaurant with the following parameters?\n{confirmation_answer_pretty}"
+                }
+            },
+            {
+                "type": "actions",
+                "elements": [
                     {
-                        "name": "confirm-add-restaurant",
                         "type": "button",
-                        "text": "Add restaurant",
-                        "value": "true",
-                        "style": "primary"
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Add restaurant"
+                        },
+                        "style": "primary",
+                        "action_id": "confirm-add-restaurant-true"
                     },
                     {
-                        "name": "confirm-add-restaurant",
                         "type": "button",
-                        "text": "Cancel",
-                        "value": "false",
-                        "style": "danger"
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Cancel"
+                        },
+                        "style": "danger",
+                        "action_id": "confirm-add-restaurant-false"
                     }
                 ]
             }
