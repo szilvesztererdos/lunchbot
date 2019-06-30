@@ -41,6 +41,44 @@ def handle_add_restaurant():
         abort(200)
 
 
+@app.route("/command/lunchbot-list-restaurants", methods=["POST"])
+def handle_list_restaurants():
+    try:
+        restaurant_entries = list(db['restaurants'].find({}, {"_id": 0, "value": 1}))
+        restaurants_markdown = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"There are {len(restaurant_entries)} restaurant(s) in Lunchbot's database:"
+                }
+            },
+            {
+                "type": "divider"
+            }
+        ]
+        for i, restaurant_entry in enumerate(restaurant_entries):
+            restaurant = restaurant_entry["value"]
+            restaurant_name_markdown = f"*{i+1}. {restaurant['name']}*\n"
+            restaurant_others_markdown = '\n'.join(f"{key}: {value}" for key, value in list(restaurant.items())[1:])
+            restaurants_markdown.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": restaurant_name_markdown + restaurant_others_markdown
+                }
+            })
+        response = {
+            "response_type": "ephermal",
+            "blocks": restaurants_markdown
+        }
+
+        return jsonify(response)
+    except Exception as e:
+        logger.error(f"ERROR: {e}")
+        abort(200)
+
+
 @app.route("/actions", methods=["POST"])
 def handle_actions():
     payload = json.loads(request.values["payload"])
