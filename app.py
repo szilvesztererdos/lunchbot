@@ -4,14 +4,14 @@ import shlex
 import json
 import pymongo
 from urllib.parse import urlparse
-from slackeventsapi import SlackEventAdapter
+from slack import WebClient
 from flask import abort, Flask, jsonify, request
 import requests
 import bson
+import re
 
 # globals
 app = Flask(__name__)
-slack_events_adapter = SlackEventAdapter(os.environ["SLACK_SIGNING_SECRET"], "/slack/events", app)
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("lunchbot")
 mongodb_uri = os.environ.get("MONGODB_URI")
@@ -22,6 +22,16 @@ except pymongo.errors.ConnectionFailure as e:
     logger.info(f"Could not connect to MongoDB: {e}")
 
 db = conn[urlparse(mongodb_uri).path[1:]]
+slack_client = WebClient(os.environ.get('SLACK_ACCESS_TOKEN'))
+
+
+def slack_api(method, **kwargs):
+    api_call = slack_client.api_call(method, **kwargs)
+    if api_call.get('ok'):
+        return api_call
+    else:
+        raise ValueError('Connection error!', api_call.get('error'), api_call.get('args'))
+
 
 
 @app.route("/command/lunchbot-add-restaurant", methods=["POST"])
@@ -56,6 +66,112 @@ def handle_list_restaurants():
     except Exception as e:
         logger.error(f"ERROR: {e}")
         abort(200)
+
+
+@app.route("/command/lunchbot-suggest", methods=["POST"])
+def handle_suggest():
+    try:
+        if request.values["text"] == "":
+            response = {
+                "text": "Please, specify at least one user."
+            }
+            return jsonify(response)
+
+        # searching for pattern like <@U1234|user>, where we need @U1234
+        user_ids_match = re.finditer("@(\S*)\|", request.values["text"])
+
+        users = slack_api("users.list")["members"]
+        user_ids = [user["id"] for user in users]
+
+        for user_id_match in user_ids_match:
+            user_id = user_id_match.group(1)
+            if user_id not in user_ids:
+                response = {
+                    "text": f"{user_id} is not valid. Please, make sure all users are real!"
+                }
+                return jsonify(response)
+
+        # TODO: this should be asked from each mentioned user!
+        response = get_response_for_asking_time_limit()
+        return jsonify(response)
+    except Exception as e:
+        logger.error(f"ERROR: {e}")
+        abort(200)
+
+
+def get_response_for_asking_time_limit():
+    # TODO: put starting user name in welcome text
+    return {
+        "response_type": "ephermal",
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "plain_text",
+                    "text": "Hi! I'm lunchbot and I'm helping you to choose where to go for lunch.\n" +
+                        "First, please give me how many time you have for lunch."
+                }
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "20 min"
+                        },
+                        "value": "20",
+                        "action_id": "answer-time-limit-20"
+                    },
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "30 min"
+                        },
+                        "value": "30",
+                        "action_id": "answer-time-limit-30"
+                    }
+                ]
+            }
+        ]
+    }
+
+
+def get_blocks_for_asking_price_limit():
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "plain_text",
+                "text": "Okay. Now, choose how much money you have for this lunch!"
+            }
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "700 HUF"
+                    },
+                    "value": "700",
+                    "action_id": "answer-price-limit-700"
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "900 min"
+                    },
+                    "value": "900",
+                    "action_id": "answer-time-limit-900"
+                }
+            ]
+        }
+    ]
 
 
 @app.route("/actions", methods=["POST"])
@@ -94,6 +210,30 @@ def handle_actions():
             }
         })
 
+        response = {
+            "response_type": "ephermal",
+            "replace_original": "true",
+            "blocks": blocks_layout
+        }
+    # TODO: this should be asked from each mentioned user
+    elif payload["actions"][0]["action_id"].startswith("answer-time-limit"):
+        # store time limit value to user in db
+        db["filters"].insert_one(
+            {
+                "user": payload["user"]["id"],
+                "time_limit": int(payload["actions"][0]["value"])
+            }
+        )
+
+        # ask for price limit
+        blocks_layout = get_blocks_for_asking_price_limit()
+        blocks_layout.insert(0, {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"Successfully chosen time limit as `{payload['actions'][0]['value']} minutes`."
+            }
+        })
         response = {
             "response_type": "ephermal",
             "replace_original": "true",
