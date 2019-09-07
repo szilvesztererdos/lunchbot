@@ -109,7 +109,7 @@ def get_response_for_asking_time_limit():
                 "text": {
                     "type": "plain_text",
                     "text": "Hi! I'm lunchbot and I'm helping you to choose where to go for lunch.\n" +
-                        "First, please give me how many time you have for lunch."
+                        "First, please give me how much time you have for lunch."
                 }
             },
             {
@@ -164,11 +164,54 @@ def get_blocks_for_asking_price_limit():
                     "type": "button",
                     "text": {
                         "type": "plain_text",
-                        "text": "900 min"
+                        "text": "900 HUF"
                     },
                     "value": "900",
-                    "action_id": "answer-time-limit-900"
+                    "action_id": "answer-price-limit-900"
                 }
+            ]
+        }
+    ]
+
+
+def get_blocks_for_asking_tag_exclude():
+    # TODO: get tags dynamically with something like this:
+    """x = db.restaurants.aggregate([
+        { "$group": {
+            "_id": { "name": "$name"},
+            "tags": { "$addToSet": "$tags" }
+        }},
+        { "$addFields": {
+            "tags": {
+            "$reduce": {
+                "input": "$tags",
+                "initialValue": [],
+                "in": { "$setUnion": [ "$$value", "$$this" ] }
+            }
+            }
+        }}
+    ])"""
+
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "plain_text",
+                "text": "Okay. Now, choose which restaurant tags do you want to exclude!"
+            }
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "<tag>"
+                    },
+                    "value": "<tag>",
+                    "action_id": "answer-tag-exclude-<tag>"
+                },
             ]
         }
     ]
@@ -179,7 +222,8 @@ def handle_actions():
     payload = json.loads(request.values["payload"])
 
     if payload["actions"][0]["action_id"].startswith("confirm-add-restaurant"):
-        restaurant_to_add = db["temp"].find_one_and_delete({"name": "temp_restaurant"})
+        # TODO: handle multiple user submission
+        restaurant_to_add = db["temp"].find_one_and_delete({})
         if payload["actions"][0]["action_id"] == "confirm-add-restaurant-true":
             db["restaurants"].insert_one(
                 restaurant_to_add
@@ -188,7 +232,7 @@ def handle_actions():
             response = {
                 "response_type": "ephermal",
                 "replace_original": "true",
-                "text": f"Successfully added restaurant `{restaurant_to_add['value']['name']}`."
+                "text": f"Successfully added restaurant `{restaurant_to_add['name']}`."
             }
         else:
             response = {
@@ -206,7 +250,7 @@ def handle_actions():
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"Successfully removed restaurant `{restaurant_to_remove['value']['name']}`."
+                "text": f"Successfully removed restaurant `{restaurant_to_remove['name']}`."
             }
         })
 
@@ -239,6 +283,30 @@ def handle_actions():
             "replace_original": "true",
             "blocks": blocks_layout
         }
+    # TODO: this should be asked from each mentioned user
+    elif payload["actions"][0]["action_id"].startswith("answer-price-limit"):
+        # store time limit value to user in db
+        db["filters"].insert_one(
+            {
+                "user": payload["user"]["id"],
+                "price_limit": int(payload["actions"][0]["value"])
+            }
+        )
+
+        # ask for tag exclude
+        blocks_layout = get_blocks_for_asking_tag_exclude()
+        blocks_layout.insert(0, {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"Successfully chosen price limit as `{payload['actions'][0]['value']} HUF`."
+            }
+        })
+        response = {
+            "response_type": "ephermal",
+            "replace_original": "true",
+            "blocks": blocks_layout
+        }
 
     requests.post(payload["response_url"], json=response)
     return 'OK'
@@ -252,7 +320,7 @@ def get_response_for_add_restaurant_confirm(parameters):
             "initial duration": int(parameters[2]),
             "initial rating": int(parameters[3]),
             "initial price": int(parameters[4]),
-            "tags": ', '.join(parameters[5:])
+            "tags": parameters[5:]
         }
     except ValueError:
         response = {
@@ -262,14 +330,11 @@ def get_response_for_add_restaurant_confirm(parameters):
 
         return response
 
-    confirmation_answer_pretty = json.dumps(
-        confirmation_answer, ensure_ascii=False, indent=0
-    )[1:-1].replace('"', '')
+    confirmation_answer_pretty = "\n".join(
+        [f"{k}: {', '.join(v)}" if isinstance(v, list) else f"{k}: {v}" for k, v in confirmation_answer.items()]
+    )
 
-    db['temp'].insert_one({
-        "name": "temp_restaurant",
-        "value": confirmation_answer
-    })
+    db['temp'].insert_one(confirmation_answer)
 
     # TODO: solve multi-user submissions as well (sending some id to temp?)
     response = {
