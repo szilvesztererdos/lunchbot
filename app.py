@@ -174,23 +174,58 @@ def get_blocks_for_asking_price_limit():
     ]
 
 
-def get_blocks_for_asking_tag_exclude():
-    # TODO: get tags dynamically with something like this:
-    """x = db.restaurants.aggregate([
-        { "$group": {
-            "_id": { "name": "$name"},
-            "tags": { "$addToSet": "$tags" }
-        }},
-        { "$addFields": {
-            "tags": {
-            "$reduce": {
-                "input": "$tags",
-                "initialValue": [],
-                "in": { "$setUnion": [ "$$value", "$$this" ] }
+def get_blocks_for_asking_tag_exclude(payload):
+    # getting tags dynamically from restaurants
+    tags_aggregated = list(db.restaurants.aggregate([
+        {
+            "$group": {
+                "_id": 0,
+                "tags": {
+                    "$push": "$tags"
+                }
             }
+        },
+        {"$addFields": {
+            "tags": {
+                "$reduce": {
+                    "input": "$tags",
+                    "initialValue": [],
+                    "in": {"$setUnion": ["$$value", "$$this"]}
+                }
             }
         }}
-    ])"""
+    ]))[0]["tags"]
+
+    # generate buttons based on aggregated tags
+    elements = [
+        {
+            "type": "button",
+            "text": {
+                "type": "plain_text",
+                "text": "I'm finished"
+            },
+            "value": "finish",
+            "style": "primary",
+            "action_id": "finish-tag-exclude"
+        }
+    ]
+    for tag in tags_aggregated:
+        # checking whether user already filtered out that tag
+        query = db["filters"].find({"user": payload["user"]["id"], "tag_exclude": tag})
+        element = {
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": tag
+                },
+                "value": tag,
+                "action_id": f"answer-tag-exclude-{tag}"
+            }
+        if query.count() > 0:
+            element["style"] = "danger"
+        elements.append(
+            element
+        )
 
     return [
         {
@@ -202,17 +237,7 @@ def get_blocks_for_asking_tag_exclude():
         },
         {
             "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "<tag>"
-                    },
-                    "value": "<tag>",
-                    "action_id": "answer-tag-exclude-<tag>"
-                },
-            ]
+            "elements": elements
         }
     ]
 
@@ -262,6 +287,7 @@ def handle_actions():
     # TODO: this should be asked from each mentioned user
     elif payload["actions"][0]["action_id"].startswith("answer-time-limit"):
         # store time limit value to user in db
+        # TODO: these should be replaced
         db["filters"].insert_one(
             {
                 "user": payload["user"]["id"],
@@ -286,6 +312,7 @@ def handle_actions():
     # TODO: this should be asked from each mentioned user
     elif payload["actions"][0]["action_id"].startswith("answer-price-limit"):
         # store time limit value to user in db
+        # TODO: these should be replaced
         db["filters"].insert_one(
             {
                 "user": payload["user"]["id"],
@@ -294,7 +321,7 @@ def handle_actions():
         )
 
         # ask for tag exclude
-        blocks_layout = get_blocks_for_asking_tag_exclude()
+        blocks_layout = get_blocks_for_asking_tag_exclude(payload)
         blocks_layout.insert(0, {
             "type": "section",
             "text": {
@@ -302,6 +329,24 @@ def handle_actions():
                 "text": f"Successfully chosen price limit as `{payload['actions'][0]['value']} HUF`."
             }
         })
+        response = {
+            "response_type": "ephermal",
+            "replace_original": "true",
+            "blocks": blocks_layout
+        }
+    # TODO: this should be asked from each mentioned user
+    elif payload["actions"][0]["action_id"].startswith("answer-tag-exclude"):
+        # store time limit value to user in db
+        # TODO: if the tag is already there, we should delete it (to mimic button switch)
+        db["filters"].insert_one(
+            {
+                "user": payload["user"]["id"],
+                "tag_exclude": payload["actions"][0]["value"]
+            }
+        )
+
+        # show updated tag exclude question
+        blocks_layout = get_blocks_for_asking_tag_exclude(payload)
         response = {
             "response_type": "ephermal",
             "replace_original": "true",
