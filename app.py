@@ -101,6 +101,7 @@ def handle_suggest():
 
 def get_response_for_asking_time_limit():
     # TODO: put starting user name in welcome text
+    # TODO: generate based on actual restaurant times and db["settings"].find_one({"name": "price_limit_step"})
     return {
         "response_type": "ephermal",
         "blocks": [
@@ -128,10 +129,10 @@ def get_response_for_asking_time_limit():
                         "type": "button",
                         "text": {
                             "type": "plain_text",
-                            "text": "30 min"
+                            "text": "70 min"
                         },
-                        "value": "30",
-                        "action_id": "answer-time-limit-30"
+                        "value": "70",
+                        "action_id": "answer-time-limit-70"
                     }
                 ]
             }
@@ -140,6 +141,7 @@ def get_response_for_asking_time_limit():
 
 
 def get_blocks_for_asking_price_limit():
+    # TODO: generate based on actual restaurant prices and db["settings"].find_one({"name": "price_limit_step"})
     return [
         {
             "type": "section",
@@ -164,10 +166,10 @@ def get_blocks_for_asking_price_limit():
                     "type": "button",
                     "text": {
                         "type": "plain_text",
-                        "text": "900 HUF"
+                        "text": "1900 HUF"
                     },
-                    "value": "900",
-                    "action_id": "answer-price-limit-900"
+                    "value": "1900",
+                    "action_id": "answer-price-limit-1900"
                 }
             ]
         }
@@ -241,6 +243,28 @@ def get_blocks_for_asking_tag_exclude(payload):
         }
     ]
 
+
+def get_blocks_for_suggested_restaurants(suggested_restaurants):
+    sections = [{
+        "type": "section",
+        "text": {
+            "type": "plain_text",
+            "text": "Based on your inputs here are the suggested restaurants to try."
+        }
+    }]
+
+    for restaurant in suggested_restaurants:
+        sections.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*{restaurant['name']}* ({restaurant['address']}) " +
+                        f"{' '.join(map(lambda x: '#'+x, restaurant['tags']))}"
+                }
+            }
+        )
+    return sections
 
 @app.route("/actions", methods=["POST"])
 def handle_actions():
@@ -360,6 +384,43 @@ def handle_actions():
 
         # show updated tag exclude question
         blocks_layout = get_blocks_for_asking_tag_exclude(payload)
+        response = {
+            "response_type": "ephermal",
+            "replace_original": "true",
+            "blocks": blocks_layout
+        }
+    # TODO: this should be asked from each mentioned user
+    elif payload["actions"][0]["action_id"].startswith("finish-tag-exclude"):
+        # get filters from db
+        # TODO: make it work for multiple users
+        time_limit = db["filters"].find_one({"user": payload["user"]["id"], "time_limit": {"$exists": 1}})["time_limit"]
+        price_limit = db["filters"].find_one({"user": payload["user"]["id"], "price_limit": {"$exists": 1}})["price_limit"]
+        excluded_tags = list(db.filters.aggregate([
+            {
+                "$match": {
+                    "user": payload["user"]["id"],
+                    "tag_exclude": {"$exists": 1}
+                }
+            },
+            {
+                "$group": {
+                    "_id": 0,
+                    "tags": {
+                        "$push": "$tag_exclude"
+                    }
+                }
+            }
+        ]))[0]["tags"]
+
+        # suggest restaurants
+        suggested_restaurants = db["restaurants"].find({
+            "initial duration": {"$lte": time_limit},
+            "initial price": {"$lte": price_limit},
+            "tags": {"$nin": excluded_tags}
+        })
+
+        # show suggested restaurants
+        blocks_layout = get_blocks_for_suggested_restaurants(list(suggested_restaurants))
         response = {
             "response_type": "ephermal",
             "replace_original": "true",
