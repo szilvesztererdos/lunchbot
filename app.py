@@ -286,13 +286,16 @@ def handle_actions():
         }
     # TODO: this should be asked from each mentioned user
     elif payload["actions"][0]["action_id"].startswith("answer-time-limit"):
-        # store time limit value to user in db
-        # TODO: these should be replaced
-        db["filters"].insert_one(
+        # store time limit value to user in db (replace if exists)
+        db["filters"].update_one(
             {
                 "user": payload["user"]["id"],
-                "time_limit": int(payload["actions"][0]["value"])
-            }
+                "time_limit": {"$exists": 1}
+            },
+            {
+                "$set": {"time_limit": int(payload["actions"][0]["value"])}
+            },
+            upsert=True
         )
 
         # ask for price limit
@@ -311,13 +314,16 @@ def handle_actions():
         }
     # TODO: this should be asked from each mentioned user
     elif payload["actions"][0]["action_id"].startswith("answer-price-limit"):
-        # store time limit value to user in db
-        # TODO: these should be replaced
-        db["filters"].insert_one(
+        # store time limit value to user in db, replace if exists
+        db["filters"].update_one(
             {
                 "user": payload["user"]["id"],
-                "price_limit": int(payload["actions"][0]["value"])
-            }
+                "price_limit": {"$exists": 1}
+            },
+            {
+                "$set": {"price_limit": int(payload["actions"][0]["value"])}
+            },
+            upsert=True
         )
 
         # ask for tag exclude
