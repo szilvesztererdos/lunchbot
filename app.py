@@ -337,13 +337,20 @@ def handle_actions():
     # TODO: this should be asked from each mentioned user
     elif payload["actions"][0]["action_id"].startswith("answer-tag-exclude"):
         # store time limit value to user in db
-        # TODO: if the tag is already there, we should delete it (to mimic button switch)
-        db["filters"].insert_one(
+        # if the tag is already there, we should delete it (to mimic button switch)
+        delete_result = db["filters"].delete_one(
             {
                 "user": payload["user"]["id"],
                 "tag_exclude": payload["actions"][0]["value"]
             }
         )
+        if delete_result.deleted_count == 0:
+            db["filters"].insert_one(
+                {
+                    "user": payload["user"]["id"],
+                    "tag_exclude": payload["actions"][0]["value"]
+                }
+            )
 
         # show updated tag exclude question
         blocks_layout = get_blocks_for_asking_tag_exclude(payload)
