@@ -23,10 +23,14 @@ except pymongo.errors.ConnectionFailure as e:
 
 db = conn[urlparse(mongodb_uri).path[1:]]
 slack_client = WebClient(os.environ.get('SLACK_ACCESS_TOKEN'))
+bot_client = WebClient(os.environ.get('SLACK_BOT_TOKEN'))
 
 
-def slack_api(method, **kwargs):
-    api_call = slack_client.api_call(method, **kwargs)
+def slack_api(method, is_bot=False, **kwargs):
+    if is_bot:
+        api_call = bot_client.api_call(method, **kwargs)
+    else:
+        api_call = slack_client.api_call(method, **kwargs)
     if api_call.get('ok'):
         return api_call
     else:
@@ -90,54 +94,68 @@ def handle_suggest():
                     "text": f"{user_id} is not valid. Please, make sure all users are real!"
                 }
                 return jsonify(response)
+            else:
+                im_response = slack_api("im.open", is_bot=True, json={"user": user_id})
+                args = {
+                    "channel": im_response["channel"]["id"],
+                    "blocks": get_blocks_for_asking_time_limit()
+                }
+                slack_api("chat.postMessage", is_bot=True, json=args)
 
-        # TODO: this should be asked from each mentioned user!
-        response = get_response_for_asking_time_limit()
-        return jsonify(response)
+        # TODO: make this response async
+        return jsonify({
+            "response_type": "ephermal",
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"Lunchbot initiated and sent to {len(mentioned_user_ids)} users."
+                    }
+                }
+            ]
+        })
     except Exception as e:
         logger.error(f"ERROR: {e}")
         abort(200)
 
 
-def get_response_for_asking_time_limit():
+def get_blocks_for_asking_time_limit():
     # TODO: put starting user name in welcome text
     # TODO: generate based on actual restaurant times and db["settings"].find_one({"name": "price_limit_step"})
-    return {
-        "response_type": "ephermal",
-        "blocks": [
-            {
-                "type": "section",
-                "text": {
-                    "type": "plain_text",
-                    "text": "Hi! I'm lunchbot and I'm helping you to choose where to go for lunch.\n" +
-                        "First, please give me how much time you have for lunch."
-                }
-            },
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {
-                            "type": "plain_text",
-                            "text": "20 min"
-                        },
-                        "value": "20",
-                        "action_id": "answer-time-limit-20"
-                    },
-                    {
-                        "type": "button",
-                        "text": {
-                            "type": "plain_text",
-                            "text": "70 min"
-                        },
-                        "value": "70",
-                        "action_id": "answer-time-limit-70"
-                    }
-                ]
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "plain_text",
+                "text": "Hi! I'm lunchbot and I'm helping you to choose where to go for lunch.\n" +
+                    "First, please give me how much time you have for lunch."
             }
-        ]
-    }
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "20 min"
+                    },
+                    "value": "20",
+                    "action_id": "answer-time-limit-20"
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "70 min"
+                    },
+                    "value": "70",
+                    "action_id": "answer-time-limit-70"
+                }
+            ]
+        }
+    ]
 
 
 def get_blocks_for_asking_price_limit():
