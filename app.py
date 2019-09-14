@@ -421,7 +421,7 @@ async def handle_actions():
         # TODO: make it work for multiple users
         time_limit = db["filters"].find_one({"user": payload["user"]["id"], "time_limit": {"$exists": 1}})["time_limit"]
         price_limit = db["filters"].find_one({"user": payload["user"]["id"], "price_limit": {"$exists": 1}})["price_limit"]
-        excluded_tags = list(db.filters.aggregate([
+        excluded_tags_result = list(db.filters.aggregate([
             {
                 "$match": {
                     "user": payload["user"]["id"],
@@ -436,7 +436,8 @@ async def handle_actions():
                     }
                 }
             }
-        ]))[0]["tags"]
+        ]))
+        excluded_tags = excluded_tags_result[0]["tags"] if len(excluded_tags_result) > 0 else []
 
         # suggest restaurants
         suggested_restaurants = db["restaurants"].find({
