@@ -5,13 +5,14 @@ import json
 import pymongo
 from urllib.parse import urlparse
 from slack import WebClient
-from flask import abort, Flask, jsonify, request
+from quart import abort, Quart, jsonify, request
 import requests
 import bson
 import re
+import asyncio
 
 # globals
-app = Flask(__name__)
+app = Quart(__name__)
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("lunchbot")
 mongodb_uri = os.environ.get("MONGODB_URI")
@@ -22,15 +23,15 @@ except pymongo.errors.ConnectionFailure as e:
     logger.info(f"Could not connect to MongoDB: {e}")
 
 db = conn[urlparse(mongodb_uri).path[1:]]
-slack_client = WebClient(os.environ.get('SLACK_ACCESS_TOKEN'))
-bot_client = WebClient(os.environ.get('SLACK_BOT_TOKEN'))
+slack_client = WebClient(os.environ.get('SLACK_ACCESS_TOKEN'), run_async=True)
+bot_client = WebClient(os.environ.get('SLACK_BOT_TOKEN'), run_async=True)
 
 
-def slack_api(method, is_bot=False, **kwargs):
+async def slack_api(method, is_bot=False, **kwargs):
     if is_bot:
-        api_call = bot_client.api_call(method, **kwargs)
+        api_call = await bot_client.api_call(method, **kwargs)
     else:
-        api_call = slack_client.api_call(method, **kwargs)
+        api_call = await slack_client.api_call(method, **kwargs)
     if api_call.get('ok'):
         return api_call
     else:
@@ -73,36 +74,17 @@ def handle_list_restaurants():
 
 
 @app.route("/command/lunchbot-suggest", methods=["POST"])
-def handle_suggest():
+async def handle_suggest():
     try:
-        if request.values["text"] == "":
+        request_values = await request.values
+        if request_values["text"] == "":
             response = {
                 "text": "Please, specify at least one user."
             }
             return jsonify(response)
 
-        # searching for pattern like <@U1234|user>, where we need @U1234
-        user_ids_match = re.finditer("@(\S*)\|", request.values["text"])
+        asyncio.create_task(start_dms(request_values))
 
-        users = slack_api("users.list")["members"]
-        user_ids = [user["id"] for user in users]
-
-        for user_id_match in user_ids_match:
-            user_id = user_id_match.group(1)
-            if user_id not in user_ids:
-                response = {
-                    "text": f"{user_id} is not valid. Please, make sure all users are real!"
-                }
-                return jsonify(response)
-            else:
-                im_response = slack_api("im.open", is_bot=True, json={"user": user_id})
-                args = {
-                    "channel": im_response["channel"]["id"],
-                    "blocks": get_blocks_for_asking_time_limit()
-                }
-                slack_api("chat.postMessage", is_bot=True, json=args)
-
-        # TODO: make this response async
         return jsonify({
             "response_type": "ephermal",
             "blocks": [
@@ -110,7 +92,7 @@ def handle_suggest():
                     "type": "section",
                     "text": {
                         "type": "plain_text",
-                        "text": f"Lunchbot initiated and sent to {len(mentioned_user_ids)} users."
+                        "text": "Lunchbot initiated."
                     }
                 }
             ]
@@ -118,6 +100,34 @@ def handle_suggest():
     except Exception as e:
         logger.error(f"ERROR: {e}")
         abort(200)
+
+
+async def start_dms(request_values):
+    # searching for pattern like <@U1234|user>, where we need @U1234
+    user_ids_match = re.finditer("@(\S*)\|", request_values["text"])
+
+    response = await slack_api("users.list")
+    users = response["members"]
+    user_ids = [user["id"] for user in users]
+
+    for user_id_match in user_ids_match:
+        user_id = user_id_match.group(1)
+        if user_id not in user_ids:
+            response = {
+                "text": f"{user_id} is not valid. Please, make sure all users are real!"
+            }
+            return jsonify(response)
+        else:
+            await start_dm(user_id)
+
+
+async def start_dm(user_id):
+    im_response = await slack_api("im.open", is_bot=True, json={"user": user_id})
+    args = {
+        "channel": im_response["channel"]["id"],
+        "blocks": get_blocks_for_asking_time_limit()
+    }
+    await slack_api("chat.postMessage", is_bot=True, json=args)
 
 
 def get_blocks_for_asking_time_limit():
@@ -285,8 +295,9 @@ def get_blocks_for_suggested_restaurants(suggested_restaurants):
     return sections
 
 @app.route("/actions", methods=["POST"])
-def handle_actions():
-    payload = json.loads(request.values["payload"])
+async def handle_actions():
+    request_values = await request.values
+    payload = json.loads(request_values["payload"])
 
     if payload["actions"][0]["action_id"].startswith("confirm-add-restaurant"):
         # TODO: handle multiple user submission
@@ -326,7 +337,6 @@ def handle_actions():
             "replace_original": "true",
             "blocks": blocks_layout
         }
-    # TODO: this should be asked from each mentioned user
     elif payload["actions"][0]["action_id"].startswith("answer-time-limit"):
         # store time limit value to user in db (replace if exists)
         db["filters"].update_one(
@@ -354,7 +364,6 @@ def handle_actions():
             "replace_original": "true",
             "blocks": blocks_layout
         }
-    # TODO: this should be asked from each mentioned user
     elif payload["actions"][0]["action_id"].startswith("answer-price-limit"):
         # store time limit value to user in db, replace if exists
         db["filters"].update_one(
@@ -382,7 +391,6 @@ def handle_actions():
             "replace_original": "true",
             "blocks": blocks_layout
         }
-    # TODO: this should be asked from each mentioned user
     elif payload["actions"][0]["action_id"].startswith("answer-tag-exclude"):
         # store time limit value to user in db
         # if the tag is already there, we should delete it (to mimic button switch)
