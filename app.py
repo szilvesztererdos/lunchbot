@@ -27,22 +27,14 @@ slack_client = WebClient(os.environ.get('SLACK_ACCESS_TOKEN'), run_async=True)
 bot_client = WebClient(os.environ.get('SLACK_BOT_TOKEN'), run_async=True)
 
 
-async def slack_api(method, is_bot=False, **kwargs):
-    if is_bot:
-        api_call = await bot_client.api_call(method, **kwargs)
-    else:
-        api_call = await slack_client.api_call(method, **kwargs)
-    if api_call.get('ok'):
-        return api_call
-    else:
-        raise ValueError('Connection error!', api_call.get('error'), api_call.get('args'))
-
+""" WEB SERVER ROUTES """
 
 
 @app.route("/command/lunchbot-add-restaurant", methods=["POST"])
-def handle_add_restaurant():
+async def handle_add_restaurant():
     try:
-        text = request.values["text"]
+        request_values = await request.values
+        text = request_values["text"]
         parameters = shlex.split(text)
 
         if text.startswith("help"):
@@ -50,7 +42,23 @@ def handle_add_restaurant():
         elif len(parameters) < 6:
             response = get_response_for_add_restaurant_few_arguments()
         else:
-            response = get_response_for_add_restaurant_confirm(parameters)
+            try:
+                confirmation_answer = {
+                    "name": parameters[0],
+                    "address": parameters[1],
+                    "initial duration": int(parameters[2]),
+                    "initial rating": int(parameters[3]),
+                    "initial price": int(parameters[4]),
+                    "tags": parameters[5:]
+                }
+            except ValueError:
+                response = {
+                    "response_type": "ephermal",
+                    "text": "Duration, rating and price should be numbers, see `/lunchbot-add-restaurant help` for usage."
+                }
+            else:
+                response = get_response_for_add_restaurant_confirm(confirmation_answer.items())
+                db["temp"].insert_one(confirmation_answer)
 
         return jsonify(response)
     except Exception as e:
@@ -92,6 +100,7 @@ async def handle_suggest():
 
         number_of_mentioned_users = 0
 
+        session_id = ""
         for user_id_match in user_ids_match:
             user_id = user_id_match.group(1)
             if user_id not in user_ids:
@@ -99,6 +108,20 @@ async def handle_suggest():
                     "text": f"{user_id} is not valid. Please, make sure all users are real!"
                 })
             else:
+                # TODO: cancel session if user is already in another session
+                if session_id == "":
+                    session_id = db["sessions"].insert_one({
+                        "started_user_id": request_values["user_id"],
+                        "user_ids": []
+                    }).inserted_id
+                db["sessions"].update_one(
+                    {
+                        "_id": session_id
+                    },
+                    {
+                        "$push": {"user_ids": user_id}
+                    }
+                )
                 asyncio.create_task(start_dm(user_id))
             number_of_mentioned_users += 1
 
@@ -115,6 +138,78 @@ async def handle_suggest():
         abort(200)
 
 
+@app.route("/actions", methods=["POST"])
+async def handle_actions():
+    request_values = await request.values
+    payload = json.loads(request_values["payload"])
+
+    if payload["actions"][0]["action_id"].startswith("confirm-add-restaurant"):
+        # TODO: handle multiple user submission
+        restaurant_to_add = db["temp"].find_one_and_delete({})
+        if payload["actions"][0]["action_id"] == "confirm-add-restaurant-true":
+            db["restaurants"].insert_one(
+                restaurant_to_add
+            )
+            logger.debug(f"Restaurant added to db: {restaurant_to_add}")
+            response = {
+                "response_type": "ephermal",
+                "replace_original": "true",
+                "text": f"Successfully added restaurant `{restaurant_to_add['name']}`."
+            }
+        else:
+            response = {
+                "response_type": "ephermal",
+                "replace_original": "true",
+                "text": f"Cancelled to add new restaurant."
+            }
+    elif payload["actions"][0]["action_id"] == "remove-restaurant":
+        restaurant_to_remove = remove_restaurant(payload["actions"][0]["value"])
+        response = get_response_for_remove_restaurant(restaurant_to_remove)
+
+    elif payload["actions"][0]["action_id"].startswith("answer-time-limit"):
+        # TODO: check if user has valid session
+        store_time_limit(payload["user"]["id"], payload["actions"][0]["value"])
+
+        # ask for price limit
+        response = get_response_for_answer_time_limit(payload['actions'][0]['value'])
+
+    elif payload["actions"][0]["action_id"].startswith("answer-price-limit"):
+        # TODO: check if user has valid session
+        store_price_limit(payload["user"]["id"], payload["actions"][0]["value"])
+
+        # ask for tag exclude
+        response = get_response_for_answer_price_limit(payload["user"]["id"], payload["actions"][0]["value"])
+
+    elif payload["actions"][0]["action_id"].startswith("answer-tag-exclude"):
+        # TODO: check if user has valid session
+        store_excluded_tag(payload["user"]["id"], payload["actions"][0]["value"])
+
+        # show updated tag exclude question
+        response = get_response_for_answer_tag_exclude(payload["user"]["id"])
+
+    elif payload["actions"][0]["action_id"].startswith("finish-tag-exclude"):
+        # TODO: check if user has valid session
+        suggested_restaurants = get_suggested_restaurants(payload["user"]["id"])
+        response = get_response_for_suggested_restaurants(suggested_restaurants)
+
+    requests.post(payload["response_url"], json=response)
+    return 'OK'
+
+
+""" SLACK API HELPER FUNCTIONS """
+
+
+async def slack_api(method, is_bot=False, **kwargs):
+    if is_bot:
+        api_call = await bot_client.api_call(method, **kwargs)
+    else:
+        api_call = await slack_client.api_call(method, **kwargs)
+    if api_call.get('ok'):
+        return api_call
+    else:
+        raise ValueError('Connection error!', api_call.get('error'), api_call.get('args'))
+
+
 async def start_dm(user_id):
     im_response = await slack_api("im.open", is_bot=True, json={"user": user_id})
     args = {
@@ -122,6 +217,65 @@ async def start_dm(user_id):
         "blocks": get_blocks_for_asking_time_limit()
     }
     await slack_api("chat.postMessage", is_bot=True, json=args)
+
+
+""" SLACK BLOCK & RESPONSE GENERATOR FUNCTIONS """
+
+
+def generate_restaurants_markdown():
+    restaurants = list(db['restaurants'].find())
+    restaurants_markdown = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"There are {len(restaurants)} restaurant(s) in Lunchbot's database:"
+            }
+        },
+        {
+            "type": "divider"
+        }
+    ]
+    for i, restaurant in enumerate(restaurants):
+        restaurant_name_markdown = f"*{i+1}. {restaurant['name']}*\n"
+        restaurant_others_markdown = '\n'.join(get_prettyfied_dict(list(restaurant.items())[2:]))
+        restaurants_markdown.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": restaurant_name_markdown + restaurant_others_markdown
+            }
+        })
+        restaurants_markdown.append({
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Remove restaurant"
+                    },
+                    "action_id": "remove-restaurant",
+                    "value": str(restaurant["_id"]),
+                    "style": "danger",
+                    "confirm": {
+                        "title": {
+                            "type": "plain_text",
+                            "text": "Are you sure?"
+                        },
+                        "confirm": {
+                            "type": "plain_text",
+                            "text": "Yes"
+                        },
+                        "deny": {
+                            "type": "plain_text",
+                            "text": "No"
+                        }
+                    }
+                }
+            ]
+        })
+    return restaurants_markdown
 
 
 def get_blocks_for_asking_time_limit():
@@ -162,43 +316,7 @@ def get_blocks_for_asking_time_limit():
     ]
 
 
-def get_blocks_for_asking_price_limit():
-    # TODO: generate based on actual restaurant prices and db["settings"].find_one({"name": "price_limit_step"})
-    return [
-        {
-            "type": "section",
-            "text": {
-                "type": "plain_text",
-                "text": "Okay. Now, choose how much money you have for this lunch!"
-            }
-        },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "700 HUF"
-                    },
-                    "value": "700",
-                    "action_id": "answer-price-limit-700"
-                },
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "1900 HUF"
-                    },
-                    "value": "1900",
-                    "action_id": "answer-price-limit-1900"
-                }
-            ]
-        }
-    ]
-
-
-def get_blocks_for_asking_tag_exclude(payload):
+def get_blocks_for_asking_tag_exclude(user_id):
     # getting tags dynamically from restaurants
     tags_aggregated = list(db.restaurants.aggregate([
         {
@@ -235,7 +353,7 @@ def get_blocks_for_asking_tag_exclude(payload):
     ]
     for tag in tags_aggregated:
         # checking whether user already filtered out that tag
-        query = db["filters"].find({"user": payload["user"]["id"], "tag_exclude": tag})
+        query = db["filters"].find({"user": user_id, "tag_exclude": tag})
         element = {
                 "type": "button",
                 "text": {
@@ -266,226 +384,60 @@ def get_blocks_for_asking_tag_exclude(payload):
     ]
 
 
-def get_blocks_for_suggested_restaurants(suggested_restaurants):
-    if len(suggested_restaurants) > 0:
-        sections = [{
+def get_response_for_answer_time_limit(time_limit):
+    # TODO: generate based on actual restaurant prices and db["settings"].find_one({"name": "price_limit_step"})
+    blocks_layout = [
+        {
             "type": "section",
             "text": {
                 "type": "plain_text",
-                "text": "Based on your inputs here are the suggested restaurants to try."
+                "text": "Okay. Now, choose how much money you have for this lunch!"
             }
-        }]
-
-        for restaurant in suggested_restaurants:
-            sections.append(
+        },
+        {
+            "type": "actions",
+            "elements": [
                 {
-                    "type": "section",
+                    "type": "button",
                     "text": {
-                        "type": "mrkdwn",
-                        "text": f"*{restaurant['name']}* ({restaurant['address']}) " +
-                            f"{' '.join(map(lambda x: '#'+x, restaurant['tags']))}"
-                    }
-                }
-            )
-    else:
-        sections = [{
-            "type": "section",
-            "text": {
-                "type": "plain_text",
-                "text": "Based on your inputs we didn't find any restaurants to try."
-            }
-        }]
-    return sections
-
-@app.route("/actions", methods=["POST"])
-async def handle_actions():
-    request_values = await request.values
-    payload = json.loads(request_values["payload"])
-
-    if payload["actions"][0]["action_id"].startswith("confirm-add-restaurant"):
-        # TODO: handle multiple user submission
-        restaurant_to_add = db["temp"].find_one_and_delete({})
-        if payload["actions"][0]["action_id"] == "confirm-add-restaurant-true":
-            db["restaurants"].insert_one(
-                restaurant_to_add
-            )
-            logger.debug(f"Restaurant added to db: {restaurant_to_add}")
-            response = {
-                "response_type": "ephermal",
-                "replace_original": "true",
-                "text": f"Successfully added restaurant `{restaurant_to_add['name']}`."
-            }
-        else:
-            response = {
-                "response_type": "ephermal",
-                "replace_original": "true",
-                "text": f"Cancelled to add new restaurant."
-            }
-    elif payload["actions"][0]["action_id"] == "remove-restaurant":
-        restaurant_id_to_remove = payload["actions"][0]["value"]
-        restaurant_to_remove = db["restaurants"].find_one({"_id": bson.ObjectId(restaurant_id_to_remove)})
-        db["restaurants"].delete_one({"_id": bson.ObjectId(restaurant_id_to_remove)})
-        logger.debug(f"Restaurant removed from db: {restaurant_to_remove}")
-        blocks_layout = generate_restaurants_markdown()
-        blocks_layout.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"Successfully removed restaurant `{restaurant_to_remove['name']}`."
-            }
-        })
-
-        response = {
-            "response_type": "ephermal",
-            "replace_original": "true",
-            "blocks": blocks_layout
-        }
-    elif payload["actions"][0]["action_id"].startswith("answer-time-limit"):
-        # store time limit value to user in db (replace if exists)
-        db["filters"].update_one(
-            {
-                "user": payload["user"]["id"],
-                "time_limit": {"$exists": 1}
-            },
-            {
-                "$set": {"time_limit": int(payload["actions"][0]["value"])}
-            },
-            upsert=True
-        )
-
-        # ask for price limit
-        blocks_layout = get_blocks_for_asking_price_limit()
-        blocks_layout.insert(0, {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"Successfully chosen time limit as `{payload['actions'][0]['value']} minutes`."
-            }
-        })
-        response = {
-            "response_type": "ephermal",
-            "replace_original": "true",
-            "blocks": blocks_layout
-        }
-    elif payload["actions"][0]["action_id"].startswith("answer-price-limit"):
-        # store time limit value to user in db, replace if exists
-        db["filters"].update_one(
-            {
-                "user": payload["user"]["id"],
-                "price_limit": {"$exists": 1}
-            },
-            {
-                "$set": {"price_limit": int(payload["actions"][0]["value"])}
-            },
-            upsert=True
-        )
-
-        # ask for tag exclude
-        blocks_layout = get_blocks_for_asking_tag_exclude(payload)
-        blocks_layout.insert(0, {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"Successfully chosen price limit as `{payload['actions'][0]['value']} HUF`."
-            }
-        })
-        response = {
-            "response_type": "ephermal",
-            "replace_original": "true",
-            "blocks": blocks_layout
-        }
-    elif payload["actions"][0]["action_id"].startswith("answer-tag-exclude"):
-        # store time limit value to user in db
-        # if the tag is already there, we should delete it (to mimic button switch)
-        delete_result = db["filters"].delete_one(
-            {
-                "user": payload["user"]["id"],
-                "tag_exclude": payload["actions"][0]["value"]
-            }
-        )
-        if delete_result.deleted_count == 0:
-            db["filters"].insert_one(
+                        "type": "plain_text",
+                        "text": "700 HUF"
+                    },
+                    "value": "700",
+                    "action_id": "answer-price-limit-700"
+                },
                 {
-                    "user": payload["user"]["id"],
-                    "tag_exclude": payload["actions"][0]["value"]
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "1900 HUF"
+                    },
+                    "value": "1900",
+                    "action_id": "answer-price-limit-1900"
                 }
-            )
-
-        # show updated tag exclude question
-        blocks_layout = get_blocks_for_asking_tag_exclude(payload)
-        response = {
-            "response_type": "ephermal",
-            "replace_original": "true",
-            "blocks": blocks_layout
+            ]
         }
-    elif payload["actions"][0]["action_id"].startswith("finish-tag-exclude"):
-        # get filters from db
-        # TODO: make it work for multiple users
-        time_limit = db["filters"].find_one({"user": payload["user"]["id"], "time_limit": {"$exists": 1}})["time_limit"]
-        price_limit = db["filters"].find_one({"user": payload["user"]["id"], "price_limit": {"$exists": 1}})["price_limit"]
-        excluded_tags_result = list(db.filters.aggregate([
-            {
-                "$match": {
-                    "user": payload["user"]["id"],
-                    "tag_exclude": {"$exists": 1}
-                }
-            },
-            {
-                "$group": {
-                    "_id": 0,
-                    "tags": {
-                        "$push": "$tag_exclude"
-                    }
-                }
-            }
-        ]))
-        excluded_tags = excluded_tags_result[0]["tags"] if len(excluded_tags_result) > 0 else []
+    ]
 
-        # suggest restaurants
-        suggested_restaurants = db["restaurants"].find({
-            "initial duration": {"$lte": time_limit},
-            "initial price": {"$lte": price_limit},
-            "tags": {"$nin": excluded_tags}
-        })
-
-        # show suggested restaurants
-        blocks_layout = get_blocks_for_suggested_restaurants(list(suggested_restaurants))
-        response = {
-            "response_type": "ephermal",
-            "replace_original": "true",
-            "blocks": blocks_layout
+    blocks_layout.insert(0, {
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"Successfully chosen time limit as `{time_limit} minutes`."
         }
+    })
+    return {
+        "response_type": "ephermal",
+        "replace_original": "true",
+        "blocks": blocks_layout
+    }
 
-    requests.post(payload["response_url"], json=response)
-    return 'OK'
 
-
-def get_response_for_add_restaurant_confirm(parameters):
-    try:
-        confirmation_answer = {
-            "name": parameters[0],
-            "address": parameters[1],
-            "initial duration": int(parameters[2]),
-            "initial rating": int(parameters[3]),
-            "initial price": int(parameters[4]),
-            "tags": parameters[5:]
-        }
-    except ValueError:
-        response = {
-            "response_type": "ephermal",
-            "text": "Duration, rating and price should be numbers, see `/lunchbot-add-restaurant help` for usage."
-        }
-
-        return response
-
-    confirmation_answer_pretty = "\n".join(
-        [f"{k}: {', '.join(v)}" if isinstance(v, list) else f"{k}: {v}" for k, v in confirmation_answer.items()]
-    )
-
-    db["temp"].insert_one(confirmation_answer)
+def get_response_for_add_restaurant_confirm(confirmation_answer):
+    confirmation_answer_pretty = "\n".join(get_prettyfied_dict(confirmation_answer))
 
     # TODO: solve multi-user submissions as well (sending some id to temp?)
-    response = {
+    return {
         "response_type": "ephermal",
         "blocks": [
             {
@@ -521,11 +473,10 @@ def get_response_for_add_restaurant_confirm(parameters):
             }
         ]
     }
-    return response
 
 
 def get_response_for_add_restaurant_help():
-    response = {
+    return {
         "response_type": "ephermal",
         "text": """
 Usage: `/lunchbot-add-restaurant <"name"> <"address"> <initial duration in minutes> <initial rating 1-5> <initial price> <"tags" separated by spaces>`
@@ -533,70 +484,185 @@ Usage: `/lunchbot-add-restaurant <"name"> <"address"> <initial duration in minut
 """
     }
 
-    return response
-
 
 def get_response_for_add_restaurant_few_arguments():
-    response = {
+    return {
         "response_type": "ephermal",
         "text": "Too few arguments, see `/lunchbot-add-restaurant help` for usage."
     }
 
-    return response
 
+def get_response_for_suggested_restaurants(suggested_restaurants):
+    suggested_restaurants = list(suggested_restaurants)
 
-def generate_restaurants_markdown():
-    restaurant_entries = list(db['restaurants'].find())
-    restaurants_markdown = [
-        {
+    if len(suggested_restaurants) > 0:
+        blocks_layout = [{
             "type": "section",
             "text": {
-                "type": "mrkdwn",
-                "text": f"There are {len(restaurant_entries)} restaurant(s) in Lunchbot's database:"
+                "type": "plain_text",
+                "text": "Based on your inputs here are the suggested restaurants to try."
+            }
+        }]
+
+        for restaurant in suggested_restaurants:
+            blocks_layout.append(
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*{restaurant['name']}* ({restaurant['address']}) " +
+                            f"{' '.join(map(lambda x: '#'+x, restaurant['tags']))}"
+                    }
+                }
+            )
+    else:
+        blocks_layout = [{
+            "type": "section",
+            "text": {
+                "type": "plain_text",
+                "text": "Based on your inputs we didn't find any restaurants to try."
+            }
+        }]
+
+    return {
+        "response_type": "ephermal",
+        "replace_original": "true",
+        "blocks": blocks_layout
+    }
+
+
+def get_response_for_answer_tag_exclude(user_id):
+    blocks_layout = get_blocks_for_asking_tag_exclude(user_id)
+    return {
+        "response_type": "ephermal",
+        "replace_original": "true",
+        "blocks": blocks_layout
+    }
+
+
+def get_response_for_answer_price_limit(user_id, price_limit):
+    blocks_layout = get_blocks_for_asking_tag_exclude(user_id)
+    blocks_layout.insert(0, {
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"Successfully chosen price limit as `{price_limit} HUF`."
+        }
+    })
+
+    return {
+        "response_type": "ephermal",
+        "replace_original": "true",
+        "blocks": blocks_layout
+    }
+
+
+def get_response_for_remove_restaurant(restaurant_to_remove):
+    blocks_layout = generate_restaurants_markdown()
+    blocks_layout.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"Successfully removed restaurant `{restaurant_to_remove['name']}`."
+        }
+    })
+
+    return {
+        "response_type": "ephermal",
+        "replace_original": "true",
+        "blocks": blocks_layout
+    }
+
+
+""" DB FUNCTIONS """
+
+
+def get_suggested_restaurants(user_id):
+    # get filters from db
+    # TODO: make it work for multiple users
+    time_limit = db["filters"].find_one({"user": user_id, "time_limit": {"$exists": 1}})["time_limit"]
+    price_limit = db["filters"].find_one({"user": user_id, "price_limit": {"$exists": 1}})["price_limit"]
+    excluded_tags_result = list(db.filters.aggregate([
+        {
+            "$match": {
+                "user": user_id,
+                "tag_exclude": {"$exists": 1}
             }
         },
         {
-            "type": "divider"
-        }
-    ]
-    for i, restaurant_entry in enumerate(restaurant_entries):
-        restaurant = restaurant_entry["value"]
-        restaurant_name_markdown = f"*{i+1}. {restaurant['name']}*\n"
-        restaurant_others_markdown = '\n'.join(f"{key}: {value}" for key, value in list(restaurant.items())[2:])
-        restaurants_markdown.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": restaurant_name_markdown + restaurant_others_markdown
-            }
-        })
-        restaurants_markdown.append({
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "Remove restaurant"
-                    },
-                    "action_id": "remove-restaurant",
-                    "value": str(restaurant_entry["_id"]),
-                    "style": "danger",
-                    "confirm": {
-                        "title": {
-                            "type": "plain_text",
-                            "text": "Are you sure?"
-                        },
-                        "confirm": {
-                            "type": "plain_text",
-                            "text": "Yes"
-                        },
-                        "deny": {
-                            "type": "plain_text",
-                            "text": "No"
-                        }
-                    }
+            "$group": {
+                "_id": 0,
+                "tags": {
+                    "$push": "$tag_exclude"
                 }
-            ]
-        })
-    return restaurants_markdown
+            }
+        }
+    ]))
+    excluded_tags = excluded_tags_result[0]["tags"] if len(excluded_tags_result) > 0 else []
+
+    # suggest restaurants
+    return db["restaurants"].find({
+        "initial duration": {"$lte": time_limit},
+        "initial price": {"$lte": price_limit},
+        "tags": {"$nin": excluded_tags}
+    })
+
+
+def store_excluded_tag(user_id, excluded_tag):
+    # store excluded tag to user in db
+    # if the tag is already there, we should delete it (to mimic button switch)
+    delete_result = db["filters"].delete_one(
+        {
+            "user": user_id,
+            "tag_exclude": excluded_tag
+        }
+    )
+    if delete_result.deleted_count == 0:
+        db["filters"].insert_one(
+            {
+                "user": user_id,
+                "tag_exclude": excluded_tag
+            }
+        )
+
+
+def store_price_limit(user_id, price_limit):
+    # store time limit value to user in db, replace if exists
+    db["filters"].update_one(
+        {
+            "user": user_id,
+            "price_limit": {"$exists": 1}
+        },
+        {
+            "$set": {"price_limit": int(price_limit)}
+        },
+        upsert=True
+    )
+
+
+def store_time_limit(user_id, time_limit):
+    # store time limit value to user in db (replace if exists)
+    db["filters"].update_one(
+        {
+            "user": user_id,
+            "time_limit": {"$exists": 1}
+        },
+        {
+            "$set": {"time_limit": int(time_limit)}
+        },
+        upsert=True
+    )
+
+
+def remove_restaurant(restaurant_id):
+    restaurant_id_to_remove = restaurant_id
+    restaurant_to_remove = db["restaurants"].find_one({"_id": bson.ObjectId(restaurant_id_to_remove)})
+    db["restaurants"].delete_one({"_id": bson.ObjectId(restaurant_id_to_remove)})
+    logger.debug(f"Restaurant removed from db: {restaurant_to_remove}")
+    return restaurant_to_remove
+
+
+""" HELPER FUNCTIONS """
+
+def get_prettyfied_dict(parameters):
+    return [f"{k}: {', '.join(v)}" if isinstance(v, list) else f"{k}: {v}" for k, v in parameters]
