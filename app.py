@@ -108,16 +108,7 @@ async def handle_suggest():
             })
         else:
             return jsonify({
-                "response_type": "ephermal",
-                "blocks": [
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "plain_text",
-                            "text": f"Lunchbot initiated for {number_of_mentioned_users} users(s)."
-                        }
-                    }
-                ]
+                "text": f"Lunchbot initiated for {number_of_mentioned_users} user(s)."
             })
     except Exception as e:
         logger.error(f"ERROR: {e}")
@@ -427,7 +418,6 @@ async def handle_actions():
             "replace_original": "true",
             "blocks": blocks_layout
         }
-    # TODO: this should be asked from each mentioned user
     elif payload["actions"][0]["action_id"].startswith("finish-tag-exclude"):
         # get filters from db
         # TODO: make it work for multiple users
@@ -492,7 +482,7 @@ def get_response_for_add_restaurant_confirm(parameters):
         [f"{k}: {', '.join(v)}" if isinstance(v, list) else f"{k}: {v}" for k, v in confirmation_answer.items()]
     )
 
-    db['temp'].insert_one(confirmation_answer)
+    db["temp"].insert_one(confirmation_answer)
 
     # TODO: solve multi-user submissions as well (sending some id to temp?)
     response = {
