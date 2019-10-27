@@ -83,42 +83,45 @@ async def handle_suggest():
             }
             return jsonify(response)
 
-        asyncio.create_task(start_dms(request_values))
+        # searching for pattern like <@U1234|user>, where we need @U1234
+        user_ids_match = re.finditer("@(\S*)\|", request_values["text"])
 
-        return jsonify({
-            "response_type": "ephermal",
-            "blocks": [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "Lunchbot initiated."
+        response = await slack_api("users.list")
+        users = response["members"]
+        user_ids = [user["id"] for user in users]
+
+        number_of_mentioned_users = 0
+
+        for user_id_match in user_ids_match:
+            user_id = user_id_match.group(1)
+            if user_id not in user_ids:
+                return jsonify({
+                    "text": f"{user_id} is not valid. Please, make sure all users are real!"
+                })
+            else:
+                asyncio.create_task(start_dm(user_id))
+            number_of_mentioned_users += 1
+
+        if number_of_mentioned_users == 0:
+            return jsonify({
+                "text": "I didn't find valid users. Please, make sure all users are real!"
+            })
+        else:
+            return jsonify({
+                "response_type": "ephermal",
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "plain_text",
+                            "text": f"Lunchbot initiated for {number_of_mentioned_users} users(s)."
+                        }
                     }
-                }
-            ]
-        })
+                ]
+            })
     except Exception as e:
         logger.error(f"ERROR: {e}")
         abort(200)
-
-
-async def start_dms(request_values):
-    # searching for pattern like <@U1234|user>, where we need @U1234
-    user_ids_match = re.finditer("@(\S*)\|", request_values["text"])
-
-    response = await slack_api("users.list")
-    users = response["members"]
-    user_ids = [user["id"] for user in users]
-
-    for user_id_match in user_ids_match:
-        user_id = user_id_match.group(1)
-        if user_id not in user_ids:
-            response = {
-                "text": f"{user_id} is not valid. Please, make sure all users are real!"
-            }
-            return jsonify(response)
-        else:
-            await start_dm(user_id)
 
 
 async def start_dm(user_id):
