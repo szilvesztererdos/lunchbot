@@ -276,25 +276,34 @@ def get_blocks_for_asking_tag_exclude(payload):
 
 
 def get_blocks_for_suggested_restaurants(suggested_restaurants):
-    sections = [{
-        "type": "section",
-        "text": {
-            "type": "plain_text",
-            "text": "Based on your inputs here are the suggested restaurants to try."
-        }
-    }]
-
-    for restaurant in suggested_restaurants:
-        sections.append(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*{restaurant['name']}* ({restaurant['address']}) " +
-                        f"{' '.join(map(lambda x: '#'+x, restaurant['tags']))}"
-                }
+    if len(suggested_restaurants) > 0:
+        sections = [{
+            "type": "section",
+            "text": {
+                "type": "plain_text",
+                "text": "Based on your inputs here are the suggested restaurants to try."
             }
-        )
+        }]
+
+        for restaurant in suggested_restaurants:
+            sections.append(
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*{restaurant['name']}* ({restaurant['address']}) " +
+                            f"{' '.join(map(lambda x: '#'+x, restaurant['tags']))}"
+                    }
+                }
+            )
+    else:
+        sections = [{
+            "type": "section",
+            "text": {
+                "type": "plain_text",
+                "text": "Based on your inputs we didn't find any restaurants to try."
+            }
+        }]
     return sections
 
 @app.route("/actions", methods=["POST"])
