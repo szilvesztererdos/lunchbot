@@ -11,6 +11,10 @@ import bson
 import re
 import asyncio
 
+# TODO: add rate restaurant feature (1 hour later, rating/price/duration)
+# TODO: use Google Maps to geocode & get device position in order to take walking time into account
+# TODO: major refactor (modules)
+
 # globals
 app = Quart(__name__)
 logging.basicConfig(level=logging.DEBUG)
