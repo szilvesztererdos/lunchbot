@@ -112,17 +112,17 @@ async def handle_suggest():
                 if session_id == "":
                     session_id = db["sessions"].insert_one({
                         "started_user_id": request_values["user_id"],
-                        "user_ids": []
+                        "users": []
                     }).inserted_id
                 db["sessions"].update_one(
                     {
                         "_id": session_id
                     },
                     {
-                        "$push": {"user_ids": user_id}
+                        "$push": {"users": {"user_id": user_id, "finished": False}}
                     }
                 )
-                asyncio.create_task(start_dm(user_id))
+                asyncio.create_task(start_dm(user_id, get_blocks_for_asking_time_limit()))
             number_of_mentioned_users += 1
 
         if number_of_mentioned_users == 0:
@@ -189,8 +189,42 @@ async def handle_actions():
 
     elif payload["actions"][0]["action_id"].startswith("finish-tag-exclude"):
         # TODO: check if user has valid session
-        suggested_restaurants = get_suggested_restaurants(payload["user"]["id"])
-        response = get_response_for_suggested_restaurants(suggested_restaurants)
+        # TODO: refactor this part
+
+        # update session that this user is finished
+        db["sessions"].update_one(
+            {"users.user_id": payload["user"]["id"]},
+            {"$set": {"users.$.finished": True}}
+        )
+
+        # answer user to wait for others
+        response = get_response_for_finish_tag_exclude()
+
+        # check whether all users are finished in this session
+        finished_session = db["sessions"].find_one({
+            "$nor": [{
+                    "users": {
+                        "$elemMatch": {
+                            "user_id": {"$ne": payload["user"]["id"]},
+                            "finished": {"$ne": True}
+                        }
+                    }
+            }]
+        })
+        if finished_session:
+            # suggest restaurants for each user in the session
+            user_ids = [user["user_id"] for user in finished_session["users"]]
+            suggested_restaurants = get_suggested_restaurants(user_ids)
+            for user_id in user_ids:
+                asyncio.create_task(
+                    start_dm(
+                        user_id,
+                        get_blocks_for_suggested_restaurants(suggested_restaurants)
+                    )
+                )
+
+            # delete session
+            db["sessions"].delete_one({"users.user_id": payload["user"]["id"]})
 
     requests.post(payload["response_url"], json=response)
     return 'OK'
@@ -210,11 +244,11 @@ async def slack_api(method, is_bot=False, **kwargs):
         raise ValueError('Connection error!', api_call.get('error'), api_call.get('args'))
 
 
-async def start_dm(user_id):
+async def start_dm(user_id, blocks):
     im_response = await slack_api("im.open", is_bot=True, json={"user": user_id})
     args = {
         "channel": im_response["channel"]["id"],
-        "blocks": get_blocks_for_asking_time_limit()
+        "blocks": blocks
     }
     await slack_api("chat.postMessage", is_bot=True, json=args)
 
@@ -353,7 +387,7 @@ def get_blocks_for_asking_tag_exclude(user_id):
     ]
     for tag in tags_aggregated:
         # checking whether user already filtered out that tag
-        query = db["filters"].find({"user": user_id, "tag_exclude": tag})
+        query = db["filters"].find({"user_id": user_id, "tag_exclude": tag})
         element = {
                 "type": "button",
                 "text": {
@@ -492,7 +526,7 @@ def get_response_for_add_restaurant_few_arguments():
     }
 
 
-def get_response_for_suggested_restaurants(suggested_restaurants):
+def get_blocks_for_suggested_restaurants(suggested_restaurants):
     suggested_restaurants = list(suggested_restaurants)
 
     if len(suggested_restaurants) > 0:
@@ -500,7 +534,7 @@ def get_response_for_suggested_restaurants(suggested_restaurants):
             "type": "section",
             "text": {
                 "type": "plain_text",
-                "text": "Based on your inputs here are the suggested restaurants to try."
+                "text": "Based on the inputs here are the suggested restaurants to try."
             }
         }]
 
@@ -520,15 +554,11 @@ def get_response_for_suggested_restaurants(suggested_restaurants):
             "type": "section",
             "text": {
                 "type": "plain_text",
-                "text": "Based on your inputs we didn't find any restaurants to try."
+                "text": "Based on the inputs we didn't find any restaurants to try."
             }
         }]
 
-    return {
-        "response_type": "ephermal",
-        "replace_original": "true",
-        "blocks": blocks_layout
-    }
+    return blocks_layout
 
 
 def get_response_for_answer_tag_exclude(user_id):
@@ -574,38 +604,78 @@ def get_response_for_remove_restaurant(restaurant_to_remove):
     }
 
 
+def get_response_for_finish_tag_exclude():
+    blocks_layout = [{
+        "type": "section",
+        "text": {
+            "type": "plain_text",
+            "text": "Thanks for your input. Please wait while others finish answering."
+        }
+    }]
+    return {
+        "response_type": "ephermal",
+        "replace_original": "true",
+        "blocks": blocks_layout
+    }
+
+
 """ DB FUNCTIONS """
 
 
-def get_suggested_restaurants(user_id):
+def get_suggested_restaurants(user_ids):
     # get filters from db
-    # TODO: make it work for multiple users
-    time_limit = db["filters"].find_one({"user": user_id, "time_limit": {"$exists": 1}})["time_limit"]
-    price_limit = db["filters"].find_one({"user": user_id, "price_limit": {"$exists": 1}})["price_limit"]
-    excluded_tags_result = list(db.filters.aggregate([
+    time_limit = list(db.filters.aggregate([
         {
             "$match": {
-                "user": user_id,
-                "tag_exclude": {"$exists": 1}
+                "user_id": {"$in": user_ids},
+                "time_limit": {"$exists": 1}
             }
         },
         {
             "$group": {
                 "_id": 0,
-                "tags": {
-                    "$push": "$tag_exclude"
-                }
+                "min_time": {"$min": "$time_limit"}
+            }
+        }
+    ]))[0]["min_time"]
+
+    price_limit = list(db.filters.aggregate([
+        {
+            "$match": {
+                "user_id": {"$in": user_ids},
+                "price_limit": {"$exists": 1}
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "min_price": {"$min": "$price_limit"}
+            }
+        }
+    ]))[0]["min_price"]
+
+    excluded_tags_result = list(db.filters.aggregate([
+        {
+            "$match": {
+                "user_id": {"$in": user_ids},
+                "tag_exclude": {"$exists": 1}
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "tags": {"$push": "$tag_exclude"}
             }
         }
     ]))
     excluded_tags = excluded_tags_result[0]["tags"] if len(excluded_tags_result) > 0 else []
 
-    # suggest restaurants
-    return db["restaurants"].find({
+    # get restaurants from db based on filters
+    return list(db["restaurants"].find({
         "initial duration": {"$lte": time_limit},
         "initial price": {"$lte": price_limit},
         "tags": {"$nin": excluded_tags}
-    })
+    }))
 
 
 def store_excluded_tag(user_id, excluded_tag):
@@ -613,14 +683,14 @@ def store_excluded_tag(user_id, excluded_tag):
     # if the tag is already there, we should delete it (to mimic button switch)
     delete_result = db["filters"].delete_one(
         {
-            "user": user_id,
+            "user_id": user_id,
             "tag_exclude": excluded_tag
         }
     )
     if delete_result.deleted_count == 0:
         db["filters"].insert_one(
             {
-                "user": user_id,
+                "user_id": user_id,
                 "tag_exclude": excluded_tag
             }
         )
@@ -630,7 +700,7 @@ def store_price_limit(user_id, price_limit):
     # store time limit value to user in db, replace if exists
     db["filters"].update_one(
         {
-            "user": user_id,
+            "user_id": user_id,
             "price_limit": {"$exists": 1}
         },
         {
@@ -644,7 +714,7 @@ def store_time_limit(user_id, time_limit):
     # store time limit value to user in db (replace if exists)
     db["filters"].update_one(
         {
-            "user": user_id,
+            "user_id": user_id,
             "time_limit": {"$exists": 1}
         },
         {
@@ -663,6 +733,7 @@ def remove_restaurant(restaurant_id):
 
 
 """ HELPER FUNCTIONS """
+
 
 def get_prettyfied_dict(parameters):
     return [f"{k}: {', '.join(v)}" if isinstance(v, list) else f"{k}: {v}" for k, v in parameters]
