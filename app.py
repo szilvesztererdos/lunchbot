@@ -122,7 +122,12 @@ async def handle_suggest():
                         "$push": {"users": {"user_id": user_id, "finished": False}}
                     }
                 )
-                asyncio.create_task(start_dm(user_id, get_blocks_for_asking_time_limit()))
+                asyncio.create_task(
+                    start_dm(
+                        user_id,
+                        get_blocks_for_asking_time_limit(request_values["user_id"])
+                    )
+                )
             number_of_mentioned_users += 1
 
         if number_of_mentioned_users == 0:
@@ -312,15 +317,15 @@ def generate_restaurants_markdown():
     return restaurants_markdown
 
 
-def get_blocks_for_asking_time_limit():
-    # TODO: put starting user name in welcome text
+def get_blocks_for_asking_time_limit(user_id):
     # TODO: generate based on actual restaurant times and db["settings"].find_one({"name": "price_limit_step"})
     return [
         {
             "type": "section",
             "text": {
-                "type": "plain_text",
-                "text": "Hi! I'm lunchbot and I'm helping you to choose where to go for lunch.\n" +
+                "type": "mrkdwn",
+                "text": f"Hi! <@{user_id}> called you to have lunch together " +
+                    "and I'm helping you to choose where to go for lunch.\n" +
                     "First, please give me how much time you have for lunch."
             }
         },
