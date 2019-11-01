@@ -194,42 +194,17 @@ async def handle_actions():
 
     elif payload["actions"][0]["action_id"].startswith("finish-tag-exclude"):
         # TODO: check if user has valid session
-        # TODO: refactor this part
-
-        # update session that this user is finished
-        db["sessions"].update_one(
-            {"users.user_id": payload["user"]["id"]},
-            {"$set": {"users.$.finished": True}}
-        )
+        set_user_finished_session(payload["user"]["id"])
 
         # answer user to wait for others
         response = get_response_for_finish_tag_exclude()
 
         # check whether all users are finished in this session
-        finished_session = db["sessions"].find_one({
-            "$nor": [{
-                    "users": {
-                        "$elemMatch": {
-                            "user_id": {"$ne": payload["user"]["id"]},
-                            "finished": {"$ne": True}
-                        }
-                    }
-            }]
-        })
-        if finished_session:
-            # suggest restaurants for each user in the session
-            user_ids = [user["user_id"] for user in finished_session["users"]]
-            suggested_restaurants = get_suggested_restaurants(user_ids)
-            for user_id in user_ids:
-                asyncio.create_task(
-                    start_dm(
-                        user_id,
-                        get_blocks_for_suggested_restaurants(suggested_restaurants)
-                    )
-                )
+        finished_session = get_finished_session_for_user(payload["user"]["id"])
 
-            # delete session
-            db["sessions"].delete_one({"users.user_id": payload["user"]["id"]})
+        if finished_session:
+            send_suggested_restaurants_to_users(finished_session)
+            delete_session_for_user(payload["user"]["id"])
 
     requests.post(payload["response_url"], json=response)
     return 'OK'
@@ -737,8 +712,44 @@ def remove_restaurant(restaurant_id):
     return restaurant_to_remove
 
 
+def set_user_finished_session(user_id):
+    db["sessions"].update_one(
+        {"users.user_id": user_id},
+        {"$set": {"users.$.finished": True}}
+    )
+
+
+def get_finished_session_for_user(user_id):
+    return db["sessions"].find_one({
+        "$nor": [{
+                "users": {
+                    "$elemMatch": {
+                        "user_id": {"$ne": user_id},
+                        "finished": {"$ne": True}
+                    }
+                }
+        }]
+    })
+
+
+def delete_session_for_user(user_id):
+    db["sessions"].delete_one({"users.user_id": user_id})
+
+
 """ HELPER FUNCTIONS """
 
 
 def get_prettyfied_dict(parameters):
     return [f"{k}: {', '.join(v)}" if isinstance(v, list) else f"{k}: {v}" for k, v in parameters]
+
+
+def send_suggested_restaurants_to_users(finished_session):
+    user_ids = [user["user_id"] for user in finished_session["users"]]
+    suggested_restaurants = get_suggested_restaurants(user_ids)
+    for user_id in user_ids:
+        asyncio.create_task(
+            start_dm(
+                user_id,
+                get_blocks_for_suggested_restaurants(suggested_restaurants)
+            )
+        )
