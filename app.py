@@ -179,32 +179,40 @@ async def handle_actions():
         response = get_response_for_remove_restaurant(restaurant_to_remove)
 
     elif payload["actions"][0]["action_id"].startswith("answer-time-limit"):
-        # TODO: check if user has valid session
-        store_time_limit(payload["user"]["id"], payload["actions"][0]["value"])
+        if get_valid_session_for_user(payload["user"]["id"]):
+            store_time_limit(payload["user"]["id"], payload["actions"][0]["value"])
 
-        # ask for price limit
-        response = get_response_for_answer_time_limit(payload['actions'][0]['value'])
+            # ask for price limit
+            response = get_response_for_answer_time_limit(payload['actions'][0]['value'])
+        else:
+            response = get_response_for_invalid_session()
 
     elif payload["actions"][0]["action_id"].startswith("answer-price-limit"):
-        # TODO: check if user has valid session
-        store_price_limit(payload["user"]["id"], payload["actions"][0]["value"])
+        if get_valid_session_for_user(payload["user"]["id"]):
+            store_price_limit(payload["user"]["id"], payload["actions"][0]["value"])
 
-        # ask for tag exclude
-        response = get_response_for_answer_price_limit(payload["user"]["id"], payload["actions"][0]["value"])
+            # ask for tag exclude
+            response = get_response_for_answer_price_limit(payload["user"]["id"], payload["actions"][0]["value"])
+        else:
+            response = get_response_for_invalid_session()
 
     elif payload["actions"][0]["action_id"].startswith("answer-tag-exclude"):
-        # TODO: check if user has valid session
-        store_excluded_tag(payload["user"]["id"], payload["actions"][0]["value"])
+        if get_valid_session_for_user(payload["user"]["id"]):
+            store_excluded_tag(payload["user"]["id"], payload["actions"][0]["value"])
 
-        # show updated tag exclude question
-        response = get_response_for_answer_tag_exclude(payload["user"]["id"])
+            # show updated tag exclude question
+            response = get_response_for_answer_tag_exclude(payload["user"]["id"])
+        else:
+            response = get_response_for_invalid_session()
 
     elif payload["actions"][0]["action_id"].startswith("finish-tag-exclude"):
-        # TODO: check if user has valid session
-        set_user_finished_session(payload["user"]["id"])
+        if get_valid_session_for_user(payload["user"]["id"]):
+            set_user_finished_session(payload["user"]["id"])
 
-        # answer user to wait for others
-        response = get_response_for_finish_tag_exclude()
+            # answer user to wait for others
+            response = get_response_for_finish_tag_exclude()
+        else:
+            response = get_response_for_invalid_session()
 
         # check whether all users are finished in this session
         finished_session = get_finished_session_for_user(payload["user"]["id"])
@@ -606,6 +614,22 @@ def get_response_for_finish_tag_exclude():
     }
 
 
+def get_response_for_invalid_session():
+    blocks_layout = [{
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": "Sorry, this lunch suggestion session is already over. " +
+                "Why not start another one with the `/lunchbot-suggest` command?"
+        }
+    }]
+    return {
+        "response_type": "ephermal",
+        "replace_original": "true",
+        "blocks": blocks_layout
+    }
+
+
 """ DB FUNCTIONS """
 
 
@@ -741,6 +765,10 @@ def get_finished_session_for_user(user_id):
 
 def delete_session_for_user(user_id):
     db["sessions"].delete_one({"users.user_id": user_id})
+
+
+def get_valid_session_for_user(user_id):
+    return db["sessions"].find_one({"users.user_id": user_id})
 
 
 """ HELPER FUNCTIONS """
