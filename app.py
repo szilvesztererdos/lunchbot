@@ -764,7 +764,8 @@ def get_finished_session_for_user(user_id):
 
 
 def delete_session_for_user(user_id):
-    db["sessions"].delete_one({"users.user_id": user_id})
+    # remove all sessions (it should be only one, but just in case)
+    db["sessions"].delete_many({"users.user_id": user_id})
 
 
 def get_valid_session_for_user(user_id):
