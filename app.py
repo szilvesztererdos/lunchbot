@@ -14,6 +14,9 @@ import asyncio
 # TODO: add rate restaurant feature (1 hour later, rating/price/duration)
 # TODO: use Google Maps to geocode & get device position in order to take walking time into account
 # TODO: major refactor (modules)
+# TODO: add a feature to opt-out ("I don't care")
+# TODO: if a user doesn't answer after a time limit, it should be opted out
+# TODO: show partial results (not good for 1-2 persons)
 
 # globals
 app = Quart(__name__)
